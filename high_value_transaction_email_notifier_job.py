@@ -1,5 +1,3 @@
-from pyspark import pipelines as dp
-from pyspark.sql.dataframe import DataFrame
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -29,10 +27,10 @@ def create_alert_email_body(alert_data):
 <h3 style="margin-top: 0;">Transaction Details</h3>
 <ul style="list-style-type: none; padding-left: 0;">
 <li><strong>Transaction ID:</strong> {alert_data['transaction_id']}</li>
-<li><strong>Amount:</strong> {alert_data['currency']} {alert_data['transaction_amount']:,.2f}</li>
-<li><strong>Your Limit:</strong> {alert_data['currency']} {alert_data['transaction_limit']:,.2f}</li>
-<li><strong>Merchant:</strong> {alert_data['merchant_name']} ({alert_data['merchant_category']})</li>
-<li><strong>Location:</strong> {alert_data['city']}, {alert_data['country']}</li>
+<li><strong>Amount:</strong> {alert_data['transaction_amount']:,.2f}</li>
+<li><strong>Your Limit:</strong> {alert_data['transaction_limit']:,.2f}</li>
+<li><strong>Merchant:</strong> {alert_data['merchant_name']}</li>
+<li><strong>Payment Channel:</strong> {alert_data['payment_channel']}</li>
 <li><strong>Date/Time:</strong> {alert_data['transaction_timestamp']}</li>
 </ul></div>
 <p><strong>Action Required:</strong></p>
@@ -81,14 +79,12 @@ def send_high_value_alert_emails(df, batch_id):
                 'alert_id': row.alert_id,
                 'customer_name': row.customer_name,
                 'transaction_id': row.transaction_id,
-                'transaction_amount': float(row.transaction_amount),
-                'currency': row.currency,
+                'transaction_amount': float(row.amount),
                 'transaction_limit': float(row.transaction_limit),
                 'merchant_name': row.merchant_name,
-                'merchant_category': row.merchant_category,
-                'transaction_timestamp': str(row.transaction_timestamp),
-                'city': row.city,
-                'country': row.country
+                'payment_channel': row.payment_channel,
+                'status': row.status,
+                'transaction_timestamp': str(row.transaction_timestamp)
             }
             
             subject = f"⚠️ High Value Transaction Alert - {alert_data['alert_id']}"
@@ -106,6 +102,15 @@ def send_high_value_alert_emails(df, batch_id):
     print(f"📊 Batch {batch_id} complete: {success_count} succeeded, {failure_count} failed")
 
 
-def high_value_alert_stream():
-    """Streaming flow that reads high-value transaction alerts."""
-    spark.readStream.table("finguard_streaming_project.gold.high_value_transactions_alert").writeStream.trigger(processingTime="30 seconds").foreachBatch(send_high_value_alert_emails)
+# Start the continuous streaming query.
+# NOTE: run this file as a Lakeflow Job (continuous/always-running), NOT as an SDP pipeline source.
+email_query = (
+    spark.readStream.table("finguard_streaming_project.gold.high_value_transactions_alert")
+    .writeStream
+    .foreachBatch(send_high_value_alert_emails)
+    .trigger(availableNow=True)
+    .option("checkpointLocation", "/Volumes/finguard_streaming_project/source/alert_notifier_checkpoint")
+    .start()
+)
+
+email_query.awaitTermination()
